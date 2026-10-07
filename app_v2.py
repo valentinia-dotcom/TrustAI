@@ -1,1145 +1,310 @@
 import streamlit as st
 import pandas as pd
-import joblib
 import numpy as np
+import joblib
+import shap
+from lime.lime_tabular import LimeTabularExplainer
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, r2_score, mean_absolute_error, mean_squared_error
+from sklearn.inspection import permutation_importance
 
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    roc_auc_score,
-    confusion_matrix,
-    classification_report,
-    r2_score,
-    mean_absolute_error,
-    mean_squared_error,
-)
-
-
-# =========================================================
-# PAGE CONFIGURATION
-# =========================================================
-
-st.set_page_config(
-    page_title="TrustAI",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-
-# =========================================================
-# MODEL LOADER
-# =========================================================
+st.set_page_config(page_title='TrustAI', page_icon='🛡️', layout='wide')
+st.title('🛡️ TrustAI')
+st.caption('A Web-Based Explainable Platform for Trustworthiness Assessment and Improvement of Machine Learning Models')
+defaults = {
+    'data': None, 'test': None, 'model': None, 'model2': None, 'target': None, 'task': None,
+    'performance': None, 'data_quality': None, 'stability': None, 'explainability': None, 'trust_score': None
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 @st.cache_resource
-def load_model(model_file):
-    return joblib.load(model_file)
+def load_model(file):
+    return joblib.load(file)
 
+def prepare_data(df, target, model):
+    X = df.drop(columns=[target])
+    y = df[target]
+    if hasattr(model, 'feature_names_in_'):
+        features = list(model.feature_names_in_)
+        missing = [x for x in features if x not in X.columns]
+        if missing:
+            raise ValueError(f'Missing model features: {missing}')
+        X = X[features]
+    return X, y
 
-# =========================================================
-# SESSION STATE
-# =========================================================
+def evaluate(model, X, y, task):
+    pred = model.predict(X)
+    if task == 'Classification':
+        acc = accuracy_score(y, pred)
+        pre = precision_score(y, pred, average='weighted', zero_division=0)
+        rec = recall_score(y, pred, average='weighted', zero_division=0)
+        f1 = f1_score(y, pred, average='weighted', zero_division=0)
+        score = np.mean([acc, pre, rec, f1]) * 100
+        return {'Accuracy': acc, 'Precision': pre, 'Recall': rec, 'F1': f1, 'Score': score}
+    r2 = r2_score(y, pred)
+    mae = mean_absolute_error(y, pred)
+    rmse = np.sqrt(mean_squared_error(y, pred))
+    target_range = float(y.max() - y.min())
+    nrmse = rmse / target_range if target_range else 0
+    score = (0.5 * np.clip(r2, 0, 1) + 0.5 * np.clip(1 - nrmse, 0, 1)) * 100
+    return {'R²': r2, 'MAE': mae, 'RMSE': rmse, 'Score': score}
 
-defaults = {
-    "dataset": None,
-    "evaluation_dataset": None,
-    "model": None,
-    "comparison_model": None,
-    "target": None,
-    "task_type": None,
-    "performance_results": None,
-    "performance_score": None,
-}
+def data_quality(df):
+    if df.empty:
+        return 0
+    missing = df.isna().sum().sum() / df.size
+    duplicates = df.duplicated().mean()
+    numeric = df.select_dtypes(include=np.number)
+    if numeric.empty:
+        infinite = 0
+    else:
+        infinite = np.isinf(numeric.to_numpy()).mean()
+    penalty = missing * 50 + duplicates * 30 + infinite * 20
+    return float(np.clip(100 - penalty, 0, 100))
 
-for key, value in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
-
-
-# =========================================================
-# SIDEBAR
-# =========================================================
-
-with st.sidebar:
-
-    st.title("🛡️ TrustAI")
-
-    st.caption("Machine Learning Trustworthiness Assessment")
-
-    st.divider()
-
-    page = st.radio(
-        "Navigation",
-        [
-            "🏠 Overview",
-            "⚙️ Setup & Upload",
-            "📊 Model Audit",
-            "🔍 Explainability",
-            "⚖️ Fairness",
-            "🔄 Model Comparison",
-            "📄 Trust Report",
-        ],
-    )
-
-    st.divider()
-
-    st.caption(
-        "TrustAI evaluates multiple dimensions of model "
-        "trustworthiness. Results should support — not replace — "
-        "human review."
-    )
-
-
-# =========================================================
-# OVERVIEW
-# =========================================================
-
-if page == "🏠 Overview":
-
-    st.title("🛡️ TrustAI")
-
-    st.subheader(
-        "Explainable Machine Learning Trustworthiness Assessment"
-    )
-
-    st.write(
-        """
-        TrustAI is a model-audit platform for evaluating trained
-        machine learning models beyond predictive performance.
-
-        It combines several diagnostic dimensions to provide a
-        structured view of model behaviour and potential risks.
-        """
-    )
-
-    st.divider()
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.info(
-            """
-            ### 📊 Model Audit
-
-            Evaluate predictive performance, data quality,
-            and model stability.
-            """
-        )
-
-    with col2:
-        st.info(
-            """
-            ### 🔍 Explainability
-
-            Inspect feature importance and model behaviour
-            using interpretable ML techniques.
-            """
-        )
-
-    with col3:
-        st.info(
-            """
-            ### ⚖️ Fairness
-
-            Compare model behaviour across selected
-            groups when appropriate.
-            """
-        )
-
-    col4, col5 = st.columns(2)
-
-    with col4:
-        st.info(
-            """
-            ### 🔄 Model Comparison
-
-            Compare two trained models across multiple
-            trust-related dimensions.
-            """
-        )
-
-    with col5:
-        st.info(
-            """
-            ### 📄 Trust Report
-
-            Summarize findings, risk indicators,
-            and recommended actions.
-            """
-        )
-
-    st.divider()
-
-    st.warning(
-        """
-        **Important:** The Trust Score is a configurable model-audit
-        indicator derived from selected metrics and weights. It should
-        not be interpreted as a universal or certified measure of AI
-        trustworthiness.
-        """
-    )
-
-
-# =========================================================
-# SETUP & UPLOAD
-# =========================================================
-
-elif page == "⚙️ Setup & Upload":
-
-    st.title("⚙️ Setup & Upload")
-
-    st.write(
-        "Configure the dataset and trained model used for "
-        "the TrustAI assessment."
-    )
-
-    st.divider()
-
-    # -----------------------------------------------------
-    # DATASET
-    # -----------------------------------------------------
-
-    st.subheader("1. Dataset")
-
-    data_file = st.file_uploader(
-        "Upload dataset",
-        type=["csv"],
-        key="main_dataset_uploader",
-    )
-
-    if data_file is not None:
-
+def stability(model, X, y, task):
+    if len(X) < 10:
+        return 50.0
+    scores = []
+    for seed in range(5):
+        sample = X.sample(frac=0.8, random_state=seed)
+        ys = y.loc[sample.index]
         try:
-            df = pd.read_csv(data_file)
-
-            st.session_state.dataset = df
-
-            st.success(
-                f"Dataset loaded — {df.shape[0]} rows × "
-                f"{df.shape[1]} columns"
-            )
-
-            with st.expander("Preview dataset"):
-                st.dataframe(
-                    df.head(10),
-                    use_container_width=True,
-                )
-
-        except Exception as e:
-            st.error(f"Could not read dataset: {e}")
-
-    # -----------------------------------------------------
-    # CONFIGURATION
-    # -----------------------------------------------------
-
-    if st.session_state.dataset is not None:
-
-        df = st.session_state.dataset
-
-        st.subheader("2. Assessment Configuration")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-
-            target = st.selectbox(
-                "Target column",
-                df.columns,
-                key="target_selector",
-            )
-
-            st.session_state.target = target
-
-        with col2:
-
-            task_type = st.selectbox(
-                "Machine learning task",
-                ["Classification", "Regression"],
-                key="task_type_selector",
-            )
-
-            st.session_state.task_type = task_type
-
-        # -----------------------------------------------------
-        # HELD-OUT DATA
-        # -----------------------------------------------------
-
-        st.subheader("3. Evaluation Dataset")
-
-        test_file = st.file_uploader(
-            "Upload held-out evaluation CSV (recommended)",
-            type=["csv"],
-            key="evaluation_dataset_uploader",
-        )
-
-        if test_file is not None:
-
-            try:
-                test_df = pd.read_csv(test_file)
-
-                if target not in test_df.columns:
-
-                    st.error(
-                        f"Held-out dataset does not contain "
-                        f"target column '{target}'."
-                    )
-
-                else:
-
-                    st.session_state.evaluation_dataset = test_df
-
-                    st.success(
-                        f"Held-out dataset loaded — "
-                        f"{len(test_df)} rows"
-                    )
-
-            except Exception as e:
-
-                st.error(
-                    f"Could not read held-out dataset: {e}"
-                )
-
-        else:
-
-            st.session_state.evaluation_dataset = None
-
-            st.warning(
-                "No held-out dataset uploaded. TrustAI will use the "
-                "main uploaded dataset for evaluation. These results "
-                "should not be described as held-out performance."
-            )
-
-    # -----------------------------------------------------
-    # MODEL
-    # -----------------------------------------------------
-
-    st.subheader("4. Primary Model")
-
-    model_file = st.file_uploader(
-        "Upload trained model",
-        type=["pkl", "joblib"],
-        key="primary_model_uploader",
-    )
-
-    if model_file is not None:
-
-        try:
-
-            model = load_model(model_file)
-
-            st.session_state.model = model
-
-            st.success(
-                f"Model loaded: {type(model).__name__}"
-            )
-
-        except Exception as e:
-
-            st.error(
-                f"Could not load model: {e}"
-            )
-
-    # -----------------------------------------------------
-    # COMPARISON MODEL
-    # -----------------------------------------------------
-
-    st.subheader("5. Comparison Model")
-
-    comparison_file = st.file_uploader(
-        "Upload another model (optional)",
-        type=["pkl", "joblib"],
-        key="comparison_model_uploader",
-    )
-
-    if comparison_file is not None:
-
-        try:
-
-            comparison_model = load_model(comparison_file)
-
-            st.session_state.comparison_model = comparison_model
-
-            st.success(
-                f"Comparison model loaded: "
-                f"{type(comparison_model).__name__}"
-            )
-
-        except Exception as e:
-
-            st.error(
-                f"Could not load comparison model: {e}"
-            )
-
-    # -----------------------------------------------------
-    # STATUS
-    # -----------------------------------------------------
-
-    st.divider()
-
-    st.subheader("Assessment Status")
-
-    dataset_ready = st.session_state.dataset is not None
-    model_ready = st.session_state.model is not None
-    target_ready = st.session_state.target is not None
-    task_ready = st.session_state.task_type is not None
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric(
-        "Dataset",
-        "Ready" if dataset_ready else "Missing",
-    )
-
-    c2.metric(
-        "Model",
-        "Ready" if model_ready else "Missing",
-    )
-
-    c3.metric(
-        "Configuration",
-        "Ready"
-        if target_ready and task_ready
-        else "Missing",
-    )
-
-    if (
-        dataset_ready
-        and model_ready
-        and target_ready
-        and task_ready
-    ):
-
-        st.success(
-            "Setup complete. Continue to Model Audit."
-        )
-
-
-# =========================================================
-# MODEL AUDIT
-# =========================================================
-
-elif page == "📊 Model Audit":
-
-    st.title("📊 Model Audit")
-
-    st.write(
-        "Evaluate the model's predictive performance using "
-        "the configured evaluation dataset."
-    )
-
-    # -----------------------------------------------------
-    # CHECK SETUP
-    # -----------------------------------------------------
-
-    if (
-        st.session_state.dataset is None
-        or st.session_state.model is None
-        or st.session_state.target is None
-        or st.session_state.task_type is None
-    ):
-
-        st.warning(
-            "Setup is incomplete. Go to **Setup & Upload** and "
-            "provide the dataset, target column, task type, "
-            "and primary model."
-        )
-
-        st.stop()
-
-    model = st.session_state.model
-    target = st.session_state.target
-    task_type = st.session_state.task_type
-
-    # -----------------------------------------------------
-    # EVALUATION DATASET
-    # -----------------------------------------------------
-
-    if st.session_state.evaluation_dataset is not None:
-
-        eval_df = (
-            st.session_state.evaluation_dataset.copy()
-        )
-
-        dataset_source = "Held-out evaluation dataset"
-        using_held_out = True
-
-    else:
-
-        eval_df = st.session_state.dataset.copy()
-
-        dataset_source = "Main uploaded dataset"
-        using_held_out = False
-
-    st.subheader("1. Evaluation Dataset")
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric(
-        "Dataset",
-        dataset_source,
-    )
-
-    col2.metric(
-        "Rows",
-        len(eval_df),
-    )
-
-    col3.metric(
-        "Columns",
-        len(eval_df.columns),
-    )
-
-    if using_held_out:
-
-        st.success(
-            "Performance is being evaluated on the "
-            "held-out dataset."
-        )
-
-    else:
-
-        st.warning(
-            "No held-out evaluation dataset was provided. "
-            "Performance is being measured on the main dataset, "
-            "so the results may be optimistic."
-        )
-
-    # -----------------------------------------------------
-    # TARGET VALIDATION
-    # -----------------------------------------------------
-
-    if target not in eval_df.columns:
-
-        st.error(
-            f"The selected target column '{target}' is not "
-            "present in the evaluation dataset."
-        )
-
-        st.stop()
-
-    X_eval = eval_df.drop(columns=[target])
-    y_eval = eval_df[target]
-
-    # -----------------------------------------------------
-    # FEATURE COMPATIBILITY
-    # -----------------------------------------------------
-
-    expected_features = None
-
-    if hasattr(model, "feature_names_in_"):
-
-        expected_features = list(
-            model.feature_names_in_
-        )
-
-    if expected_features is not None:
-
-        missing_features = [
-            feature
-            for feature in expected_features
-            if feature not in X_eval.columns
-        ]
-
-        extra_features = [
-            feature
-            for feature in X_eval.columns
-            if feature not in expected_features
-        ]
-
-        if missing_features:
-
-            st.error(
-                "The evaluation dataset is missing features "
-                "required by the model:"
-            )
-
-            st.write(missing_features)
-
-            st.stop()
-
-        X_model = X_eval[expected_features]
-
-        if extra_features:
-
-            st.info(
-                "The evaluation dataset contains additional "
-                "columns that are not required by the model. "
-                "They will be ignored."
-            )
-
-    else:
-
-        X_model = X_eval
-
-        st.info(
-            "The model does not expose `feature_names_in_`. "
-            "TrustAI therefore cannot automatically verify "
-            "the original feature names."
-        )
-
-    # -----------------------------------------------------
-    # PREDICTIONS
-    # -----------------------------------------------------
-
-    st.divider()
-
-    st.subheader("2. Predictive Performance")
-
-    try:
-
-        y_pred = model.predict(X_model)
-
-    except Exception as e:
-
-        st.error(
-            "The model could not generate predictions."
-        )
-
-        st.exception(e)
-
-        st.stop()
-
-    # =====================================================
-    # CLASSIFICATION
-    # =====================================================
-
-    if task_type == "Classification":
-
-        try:
-
-            accuracy = accuracy_score(
-                y_eval,
-                y_pred,
-            )
-
-            precision = precision_score(
-                y_eval,
-                y_pred,
-                average="weighted",
-                zero_division=0,
-            )
-
-            recall = recall_score(
-                y_eval,
-                y_pred,
-                average="weighted",
-                zero_division=0,
-            )
-
-            f1 = f1_score(
-                y_eval,
-                y_pred,
-                average="weighted",
-                zero_division=0,
-            )
-
-            roc_auc = None
-
-            if hasattr(model, "predict_proba"):
-
-                try:
-
-                    probabilities = (
-                        model.predict_proba(X_model)
-                    )
-
-                    classes = getattr(
-                        model,
-                        "classes_",
-                        np.unique(y_eval),
-                    )
-
-                    if len(classes) == 2:
-
-                        roc_auc = roc_auc_score(
-                            y_eval,
-                            probabilities[:, 1],
-                        )
-
-                    elif len(classes) > 2:
-
-                        roc_auc = roc_auc_score(
-                            y_eval,
-                            probabilities,
-                            multi_class="ovr",
-                            average="weighted",
-                            labels=classes,
-                        )
-
-                except Exception:
-
-                    roc_auc = None
-
-            metric_cols = st.columns(5)
-
-            metric_cols[0].metric(
-                "Accuracy",
-                f"{accuracy:.3f}",
-            )
-
-            metric_cols[1].metric(
-                "Precision",
-                f"{precision:.3f}",
-            )
-
-            metric_cols[2].metric(
-                "Recall",
-                f"{recall:.3f}",
-            )
-
-            metric_cols[3].metric(
-                "F1 Score",
-                f"{f1:.3f}",
-            )
-
-            metric_cols[4].metric(
-                "ROC-AUC",
-                f"{roc_auc:.3f}"
-                if roc_auc is not None
-                else "N/A",
-            )
-
-            scoring_metrics = [
-                accuracy,
-                precision,
-                recall,
-                f1,
-            ]
-
-            if roc_auc is not None:
-                scoring_metrics.append(roc_auc)
-
-            performance_score = (
-                sum(scoring_metrics)
-                / len(scoring_metrics)
-            ) * 100
-
-            performance_score = max(
-                0,
-                min(100, performance_score),
-            )
-
-            # ---------------------------------------------
-            # CONFUSION MATRIX
-            # ---------------------------------------------
-
-            st.subheader("Confusion Matrix")
-
-            labels = list(
-                np.unique(
-                    np.concatenate(
-                        [
-                            np.asarray(y_eval),
-                            np.asarray(y_pred),
-                        ]
-                    )
-                )
-            )
-
-            cm = confusion_matrix(
-                y_eval,
-                y_pred,
-                labels=labels,
-            )
-
-            cm_df = pd.DataFrame(
-                cm,
-                index=[
-                    f"Actual {label}"
-                    for label in labels
-                ],
-                columns=[
-                    f"Predicted {label}"
-                    for label in labels
-                ],
-            )
-
-            st.dataframe(
-                cm_df,
-                use_container_width=True,
-            )
-
-            # ---------------------------------------------
-            # CLASSIFICATION REPORT
-            # ---------------------------------------------
-
-            with st.expander(
-                "View Classification Report"
-            ):
-
-                report = classification_report(
-                    y_eval,
-                    y_pred,
-                    output_dict=True,
-                    zero_division=0,
-                )
-
-                report_df = (
-                    pd.DataFrame(report).transpose()
-                )
-
-                st.dataframe(
-                    report_df,
-                    use_container_width=True,
-                )
-
-            performance_results = {
-                "task_type": "Classification",
-                "dataset_source": dataset_source,
-                "held_out": using_held_out,
-                "accuracy": float(accuracy),
-                "precision": float(precision),
-                "recall": float(recall),
-                "f1": float(f1),
-                "roc_auc": (
-                    float(roc_auc)
-                    if roc_auc is not None
-                    else None
-                ),
-                "performance_score": float(
-                    performance_score
-                ),
-            }
-
-        except Exception as e:
-
-            st.error(
-                "An error occurred while calculating "
-                "classification metrics."
-            )
-
-            st.exception(e)
-
-            st.stop()
-
-    # =====================================================
-    # REGRESSION
-    # =====================================================
-
-    elif task_type == "Regression":
-
-        try:
-
-            r2 = r2_score(
-                y_eval,
-                y_pred,
-            )
-
-            mae = mean_absolute_error(
-                y_eval,
-                y_pred,
-            )
-
-            mse = mean_squared_error(
-                y_eval,
-                y_pred,
-            )
-
-            rmse = np.sqrt(mse)
-
-            y_range = (
-                float(y_eval.max())
-                - float(y_eval.min())
-            )
-
-            if y_range > 0:
-
-                normalized_rmse = (
-                    rmse / y_range
-                )
-
-            else:
-
-                normalized_rmse = 0.0
-
-            # ---------------------------------------------
-            # PERFORMANCE INDICATOR
-            #
-            # 50% R² component
-            # 50% normalized RMSE component
-            # ---------------------------------------------
-
-            r2_component = max(
-                0,
-                min(1, r2),
-            )
-
-            error_component = max(
-                0,
-                min(
-                    1,
-                    1 - normalized_rmse,
-                ),
-            )
-
-            performance_score = (
-                (0.50 * r2_component)
-                + (0.50 * error_component)
-            ) * 100
-
-            performance_score = max(
-                0,
-                min(100, performance_score),
-            )
-
-            metric_cols = st.columns(4)
-
-            metric_cols[0].metric(
-                "R²",
-                f"{r2:.3f}",
-            )
-
-            metric_cols[1].metric(
-                "MAE",
-                f"{mae:,.3f}",
-            )
-
-            metric_cols[2].metric(
-                "RMSE",
-                f"{rmse:,.3f}",
-            )
-
-            metric_cols[3].metric(
-                "Normalized RMSE",
-                f"{normalized_rmse:.3f}",
-            )
-
-            performance_results = {
-                "task_type": "Regression",
-                "dataset_source": dataset_source,
-                "held_out": using_held_out,
-                "r2": float(r2),
-                "mae": float(mae),
-                "rmse": float(rmse),
-                "normalized_rmse": float(
-                    normalized_rmse
-                ),
-                "performance_score": float(
-                    performance_score
-                ),
-            }
-
-        except Exception as e:
-
-            st.error(
-                "An error occurred while calculating "
-                "regression metrics."
-            )
-
-            st.exception(e)
-
-            st.stop()
-
-    else:
-
-        st.error(
-            "Unknown task type. Select Classification or "
-            "Regression in Setup & Upload."
-        )
-
-        st.stop()
-
-    # -----------------------------------------------------
-    # SAVE RESULTS
-    # -----------------------------------------------------
-
-    st.session_state.performance_results = (
-        performance_results
-    )
-
-    st.session_state.performance_score = (
-        performance_score
-    )
-
-    # -----------------------------------------------------
-    # PERFORMANCE INDICATOR
-    # -----------------------------------------------------
-
-    st.divider()
-
-    st.subheader("3. Performance Indicator")
-
-    score_col, risk_col = st.columns(2)
-
-    score_col.metric(
-        "Performance Score",
-        f"{performance_score:.1f} / 100",
-    )
-
-    if performance_score >= 80:
-
-        performance_level = "Strong"
-        risk_level = "Low"
-
-    elif performance_score >= 60:
-
-        performance_level = "Moderate"
-        risk_level = "Medium"
-
-    else:
-
-        performance_level = "Weak"
-        risk_level = "High"
-
-    risk_col.metric(
-        "Performance Risk",
-        risk_level,
-    )
-
-    if performance_score >= 80:
-
-        st.success(
-            "Strong predictive performance was observed "
-            "on the selected evaluation dataset."
-        )
-
-    elif performance_score >= 60:
-
-        st.warning(
-            "Moderate predictive performance was observed. "
-            "Review individual metrics before relying on "
-            "the model."
-        )
-
-    else:
-
-        st.error(
-            "Weak predictive performance was observed. "
-            "The model may require further validation "
-            "or improvement."
-        )
-
-    # -----------------------------------------------------
-    # AUDIT CONTEXT
-    # -----------------------------------------------------
-
-    st.subheader("4. Audit Context")
-
-    context_df = pd.DataFrame(
-        {
-            "Item": [
-                "Task Type",
-                "Evaluation Source",
-                "Held-out Evaluation",
-                "Evaluation Rows",
-                "Performance Level",
-            ],
-            "Value": [
-                task_type,
-                dataset_source,
-                (
-                    "Yes"
-                    if using_held_out
-                    else "No"
-                ),
-                len(eval_df),
-                performance_level,
-            ],
-        }
-    )
-
-    st.dataframe(
-        context_df,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.caption(
-        "The Performance Score is a configurable audit "
-        "indicator derived from selected predictive metrics. "
-        "It is intended to support model review and should "
-        "not be interpreted as a universal or certified "
-        "measure of model quality."
-    )
-
-
-# =========================================================
-# EXPLAINABILITY
-# =========================================================
-
-elif page == "🔍 Explainability":
-
-    st.title("🔍 Explainability")
-
-    st.info(
-        "Permutation importance, SHAP, and LIME explanations "
-        "will appear here."
-    )
-
-
-# =========================================================
-# FAIRNESS
-# =========================================================
-
-elif page == "⚖️ Fairness":
-
-    st.title("⚖️ Fairness")
-
-    st.info(
-        "Group-level fairness diagnostics will appear here."
-    )
-
-
-# =========================================================
-# MODEL COMPARISON
-# =========================================================
-
-elif page == "🔄 Model Comparison":
-
-    st.title("🔄 Model Comparison")
-
-    st.info(
-        "Side-by-side model comparison will appear here."
-    )
-
-
-# =========================================================
-# TRUST REPORT
-# =========================================================
-
-elif page == "📄 Trust Report":
-
-    st.title("📄 Trust Report")
-
-    if st.session_state.performance_results is None:
-
-        st.info(
-            "Complete the Model Audit to begin building "
-            "the Trust Report."
-        )
-
-    else:
-
-        st.subheader("Current Audit Results")
-
+            result = evaluate(model, sample, ys, task)
+            scores.append(result['Score'])
+        except Exception:
+            pass
+    if len(scores) < 2:
+        return 50.0
+    variation = np.std(scores)
+    return float(np.clip(100 - variation * 5, 0, 100))
+
+def risk(score):
+    if score >= 80:
+        return 'Low'
+    if score >= 60:
+        return 'Medium'
+    return 'High'
+
+def trust_score(performance, quality, stability, explainability):
+    return 0.40 * performance + 0.20 * quality + 0.20 * stability + 0.20 * explainability
+
+page = st.sidebar.radio('Navigation', [
+    '🏠 Overview', '⚙️ Upload & Setup', '📊 Evaluate', '🔍 Explain',
+    '🛡️ Trust Score', '🔄 Model Comparison', '💡 Recommendations'
+])
+if page == '🏠 Overview':
+    st.header('TrustAI')
+    st.write("""
+        TrustAI evaluates trained machine learning models beyond
+        predictive accuracy.
+
+        The platform combines model evaluation, data quality,
+        stability and explainability to provide a structured
+        Trust Indicator and improvement recommendations.
+        """)
+    st.subheader('Assessment Workflow')
+    st.info('Upload → Evaluate → Explain with SHAP & LIME → Trust Score → Compare Models → Recommend Improvements')
+    st.warning('The Trust Score is a configurable model-audit indicator. It is not a certified or universal measure of AI trustworthiness.')
+elif page == '⚙️ Upload & Setup':
+    st.header('⚙️ Upload Dataset & Model')
+    data_file = st.file_uploader('Dataset (CSV)', type='csv', key='data_upload')
+    if data_file:
+        st.session_state.data = pd.read_csv(data_file)
+    if st.session_state.data is not None:
+        df = st.session_state.data
+        st.success(f'Dataset loaded: {len(df)} rows × {len(df.columns)} columns')
+        st.dataframe(df.head(), use_container_width=True)
         c1, c2 = st.columns(2)
-
-        c1.metric(
-            "Performance Score",
-            f"{st.session_state.performance_score:.1f} / 100",
-        )
-
-        held_out = (
-            st.session_state.performance_results.get(
-                "held_out",
-                False,
-            )
-        )
-
-        c2.metric(
-            "Evaluation",
-            (
-                "Held-out"
-                if held_out
-                else "Main Dataset"
-            ),
-        )
-
-        st.info(
-            "The complete Trust Report will combine "
-            "performance, data quality, stability, "
-            "explainability, and fairness indicators "
-            "as those modules are completed."
-        )
+        with c1:
+            st.session_state.target = st.selectbox('Target column', df.columns, key='target_select')
+        with c2:
+            st.session_state.task = st.selectbox('Task type', ['Classification', 'Regression'], key='task_select')
+        test_file = st.file_uploader('Held-out evaluation dataset (optional)', type='csv', key='test_upload')
+        if test_file:
+            st.session_state.test = pd.read_csv(test_file)
+    model_file = st.file_uploader('Primary model (.pkl / .joblib)', type=['pkl', 'joblib'], key='model_upload')
+    if model_file:
+        try:
+            st.session_state.model = load_model(model_file)
+            st.success(f'Primary model loaded: {type(st.session_state.model).__name__}')
+        except Exception as e:
+            st.error(f'Model could not be loaded: {e}')
+    model2_file = st.file_uploader('Comparison model (optional)', type=['pkl', 'joblib'], key='model2_upload')
+    if model2_file:
+        try:
+            st.session_state.model2 = load_model(model2_file)
+            st.success(f'Comparison model loaded: {type(st.session_state.model2).__name__}')
+        except Exception as e:
+            st.error(f'Comparison model could not be loaded: {e}')
+    if st.session_state.data is not None and st.session_state.model is not None and st.session_state.target:
+        st.success('Setup complete. Continue to Evaluate.')
+elif page == '📊 Evaluate':
+    st.header('📊 Model Evaluation')
+    if st.session_state.data is None or st.session_state.model is None or not st.session_state.target:
+        st.warning('Complete Upload & Setup first.')
+        st.stop()
+    df = st.session_state.test if st.session_state.test is not None else st.session_state.data
+    if st.session_state.test is None:
+        st.warning('No held-out dataset was uploaded. Evaluation is using the main dataset.')
+    else:
+        st.success('Using held-out evaluation data.')
+    try:
+        X, y = prepare_data(df, st.session_state.target, st.session_state.model)
+        results = evaluate(st.session_state.model, X, y, st.session_state.task)
+        performance = results['Score']
+        quality = data_quality(df)
+        stable = stability(st.session_state.model, X, y, st.session_state.task)
+        st.session_state.performance = performance
+        st.session_state.data_quality = quality
+        st.session_state.stability = stable
+        st.subheader('Performance')
+        cols = st.columns(len(results) - 1)
+        metrics = [(k, v) for k, v in results.items() if k != 'Score']
+        for col, (name, value) in zip(cols, metrics):
+            col.metric(name, f'{value:.3f}')
+        st.divider()
+        c1, c2, c3 = st.columns(3)
+        c1.metric('Performance Score', f'{performance:.1f}/100')
+        c2.metric('Data Quality', f'{quality:.1f}/100')
+        c3.metric('Stability', f'{stable:.1f}/100')
+        st.write(f'**Performance Risk:** {risk(performance)}')
+        st.caption('These scores are configurable diagnostic indicators intended to support model review.')
+    except Exception as e:
+        st.error(f'Evaluation failed: {e}')
+elif page == '🔍 Explain':
+    st.header('🔍 Model Explainability')
+    if st.session_state.data is None or st.session_state.model is None or not st.session_state.target:
+        st.warning('Complete Upload & Setup first.')
+        st.stop()
+    df = st.session_state.test if st.session_state.test is not None else st.session_state.data
+    model = st.session_state.model
+    try:
+        X, y = prepare_data(df, st.session_state.target, model)
+        X_sample = X.sample(min(100, len(X)), random_state=42)
+        st.subheader('Feature Importance')
+        result = permutation_importance(model, X_sample, y.loc[X_sample.index], n_repeats=3, random_state=42)
+        importance = pd.DataFrame({'Feature': X_sample.columns, 'Importance': result.importances_mean}).sort_values(
+            'Importance', ascending=False)
+        st.bar_chart(importance.set_index('Feature').head(10))
+        st.subheader('SHAP Explanation')
+        shap_success = False
+        try:
+            background = X_sample.iloc[:min(30, len(X_sample))]
+            explainer = shap.Explainer(model.predict, background)
+            shap_values = explainer(X_sample.iloc[:min(20, len(X_sample))])
+            values = np.abs(shap_values.values)
+            if values.ndim > 2:
+                values = values.mean(axis=-1)
+            shap_importance = values.mean(axis=0)
+            shap_df = pd.DataFrame({'Feature': X_sample.columns, 'SHAP Importance': shap_importance}).sort_values(
+                'SHAP Importance', ascending=False)
+            st.bar_chart(shap_df.set_index('Feature').head(10))
+            st.success('SHAP explanation generated successfully.')
+            shap_success = True
+        except Exception as e:
+            st.warning(f'SHAP could not explain this model automatically: {e}')
+        st.subheader('LIME Local Explanation')
+        lime_success = False
+        try:
+            numeric_X = X_sample.select_dtypes(include=np.number)
+            if len(numeric_X.columns) != len(X_sample.columns):
+                raise ValueError('LIME requires numeric model input in this compact implementation.')
+            mode = 'classification' if st.session_state.task == 'Classification' else 'regression'
+            lime = LimeTabularExplainer(X_sample.to_numpy(), feature_names=list(X_sample.columns), mode=mode, random_state=42)
+            row = X_sample.iloc[0]
+            if mode == 'classification':
+                if not hasattr(model, 'predict_proba'):
+                    raise ValueError('The model does not provide predict_proba().')
+                explanation = lime.explain_instance(row.to_numpy(), model.predict_proba, num_features=min(10, X.shape[1]))
+            else:
+                explanation = lime.explain_instance(row.to_numpy(), model.predict, num_features=min(10, X.shape[1]))
+            lime_df = pd.DataFrame(explanation.as_list(), columns=['Feature', 'Contribution'])
+            st.dataframe(lime_df, use_container_width=True, hide_index=True)
+            st.success('LIME local explanation generated successfully.')
+            lime_success = True
+        except Exception as e:
+            st.warning(f'LIME could not explain this model automatically: {e}')
+        methods = [True, shap_success, lime_success]
+        explainability = sum(methods) / len(methods) * 100
+        st.session_state.explainability = explainability
+        st.metric('Explainability Score', f'{explainability:.1f}/100')
+        st.caption('The Explainability Score reflects whether the configured explanation methods were successfully generated. '
+                   'It does not measure explanation correctness.')
+    except Exception as e:
+        st.error(f'Explainability analysis failed: {e}')
+elif page == '🛡️ Trust Score':
+    st.header('🛡️ Trust Score')
+    required = [st.session_state.performance, st.session_state.data_quality, st.session_state.stability, st.session_state.explainability]
+    if any(x is None for x in required):
+        st.warning('Complete Evaluate and Explain before calculating the Trust Score.')
+        st.stop()
+    score = trust_score(st.session_state.performance, st.session_state.data_quality,
+                        st.session_state.stability, st.session_state.explainability)
+    st.session_state.trust_score = score
+    st.metric('Overall Trust Indicator', f'{score:.1f}/100')
+    st.metric('Overall Risk', risk(score))
+    components = pd.DataFrame({
+        'Component': ['Performance', 'Data Quality', 'Stability', 'Explainability'],
+        'Score': [st.session_state.performance, st.session_state.data_quality,
+                  st.session_state.stability, st.session_state.explainability],
+        'Weight': ['40%', '20%', '20%', '20%']
+    })
+    st.dataframe(components, use_container_width=True, hide_index=True)
+    st.bar_chart(components.set_index('Component')['Score'])
+    st.warning('The Trust Score is a configurable model-audit indicator for comparative review. '
+               'It is not a universal, regulatory, or certified measure of model trustworthiness.')
+elif page == '🔄 Model Comparison':
+    st.header('🔄 Model Comparison')
+    if st.session_state.model2 is None:
+        st.info('Upload a comparison model in Upload & Setup.')
+        st.stop()
+    if st.session_state.data is None or st.session_state.model is None:
+        st.warning('Complete setup first.')
+        st.stop()
+    df = st.session_state.test if st.session_state.test is not None else st.session_state.data
+    try:
+        X1, y = prepare_data(df, st.session_state.target, st.session_state.model)
+        X2, _ = prepare_data(df, st.session_state.target, st.session_state.model2)
+        primary = evaluate(st.session_state.model, X1, y, st.session_state.task)
+        comparison = evaluate(st.session_state.model2, X2, y, st.session_state.task)
+        table = pd.DataFrame({'Model': ['Primary Model', 'Comparison Model'], 'Performance Score': [primary['Score'], comparison['Score']]})
+        st.dataframe(table, use_container_width=True, hide_index=True)
+        st.bar_chart(table.set_index('Model'))
+        if primary['Score'] > comparison['Score']:
+            st.success('Primary model has the stronger predictive performance on this evaluation dataset.')
+        elif comparison['Score'] > primary['Score']:
+            st.success('Comparison model has the stronger predictive performance on this evaluation dataset.')
+        else:
+            st.info('Both models have the same Performance Score.')
+        st.caption('This comparison evaluates predictive performance. '
+                   'Trust-related dimensions should also be reviewed before selecting a model.')
+    except Exception as e:
+        st.error(f'Model comparison failed: {e}')
+elif page == '💡 Recommendations':
+    st.header('💡 Recommended Improvements')
+    if st.session_state.trust_score is None:
+        st.warning('Complete Evaluate, Explain and Trust Score first.')
+        st.stop()
+    recommendations = []
+    if st.session_state.performance < 80:
+        recommendations.append('Improve predictive performance through feature engineering, model tuning, or alternative algorithms.')
+    if st.session_state.data_quality < 80:
+        recommendations.append('Improve data quality by reviewing missing values, duplicate records and invalid numeric values.')
+    if st.session_state.stability < 80:
+        recommendations.append('Investigate model stability using additional validation samples or cross-validation.')
+    if st.session_state.explainability < 80:
+        recommendations.append("Review SHAP and LIME compatibility and improve the model's explanation pipeline.")
+    if st.session_state.trust_score < 60:
+        recommendations.append('Avoid high-impact deployment until the identified model risks have been reviewed.')
+    st.metric('Current Trust Indicator', f'{st.session_state.trust_score:.1f}/100')
+    st.write(f'**Risk Level:** {risk(st.session_state.trust_score)}')
+    if recommendations:
+        for i, recommendation in enumerate(recommendations, start=1):
+            st.write(f'**{i}.** {recommendation}')
+    else:
+        st.success('No major weaknesses were identified by the configured TrustAI indicators. '
+                   'Continue monitoring the model with new and representative data.')
+    st.divider()
+    st.caption('Recommendations are generated from configurable diagnostic thresholds and should support, not replace, expert review.')

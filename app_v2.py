@@ -252,7 +252,7 @@ elif page == "⚙️ Setup & Upload":
         test_file = st.file_uploader(
             "Upload held-out evaluation CSV (recommended)",
             type=["csv"],
-            key="evaluation_dataset"
+            key="evaluation_dataset_uploader"
         )
 
         if test_file is not None:

@@ -331,7 +331,7 @@ elif page == "⚙️ Setup & Upload":
     comparison_file = st.file_uploader(
         "Upload another model (optional)",
         type=["pkl", "joblib"],
-        key="comparison_model"
+        key="comparison_model_uploader"
     )
 
     if comparison_file is not None:
